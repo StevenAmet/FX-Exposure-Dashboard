@@ -111,26 +111,51 @@ def fetch_rate(pair):
 
 @st.cache_data(ttl=3600)
 def get_fx_rate(from_curr, to_curr):
+
+    # SAME currency
     if from_curr == to_curr:
         return 1.0
 
-    # 1. Direct
-    direct = fetch_rate(f"{from_curr}{to_curr}=X")
-    if direct:
-        return direct
+    # -------------------------------
+    # HANDLE USD EXPLICITLY
+    # -------------------------------
 
-    # 2. Inverse
-    inverse = fetch_rate(f"{to_curr}{from_curr}=X")
-    if inverse:
-        return 1 / inverse
+    # USD → XXX
+    if from_curr == "USD":
+        rate = fetch_rate(f"USD{to_curr}=X")
+        if rate:
+            return rate
 
-    # 3. USD Cross
-    if from_curr != "USD" and to_curr != "USD":
-        to_usd = fetch_rate(f"{from_curr}USD=X")
-        usd_to_target = fetch_rate(f"USD{to_curr}=X")
+        inverse = fetch_rate(f"{to_curr}USD=X")
+        if inverse:
+            return 1 / inverse
 
-        if to_usd and usd_to_target:
+        return np.nan
+
+    # XXX → USD
+    if to_curr == "USD":
+        rate = fetch_rate(f"{from_curr}USD=X")
+        if rate:
+            return rate
+
+        inverse = fetch_rate(f"USD{from_curr}=X")
+        if inverse:
+            return 1 / inverse
+
+        return np.nan
+
+    # -------------------------------
+    # NON-USD CROSS (via USD)
+    # -------------------------------
+    try:
+        to_usd = get_fx_rate(from_curr, "USD")
+        usd_to_target = get_fx_rate("USD", to_curr)
+
+        if pd.notna(to_usd) and pd.notna(usd_to_target):
             return to_usd * usd_to_target
+
+    except:
+        return np.nan
 
     return np.nan
 
