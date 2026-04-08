@@ -170,7 +170,6 @@ def get_fx_rate(from_curr, to_curr):
         if from_curr in rates and to_curr in rates:
             return rates[to_curr] / rates[from_curr]
         
-st.write("DEBUG RATES:", fetch_all_rates())
 
     # -------------------------------
     # FALLBACK: YAHOO (MARKET DATA)
@@ -187,6 +186,8 @@ st.write("DEBUG RATES:", fetch_all_rates())
     # FINAL FAIL
     # -------------------------------
     return np.nan
+
+st.write("DEBUG RATES:", fetch_all_rates())
 
 # -------------------------------
 # FX RATES
