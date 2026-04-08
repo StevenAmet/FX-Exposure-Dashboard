@@ -102,9 +102,9 @@ base_currency = st.sidebar.selectbox(
 
 @st.cache_data(ttl=3600)
 def fetch_all_rates():
-    """Fetch FX rates (EUR base) - robust version"""
+    """Fetch FX rates (EUR base) using Frankfurter API (ECB-backed)"""
     try:
-        url = "https://api.exchangerate.host/latest"
+        url = "https://api.frankfurter.app/latest"
         response = requests.get(url, timeout=5)
 
         if response.status_code != 200:
@@ -112,18 +112,17 @@ def fetch_all_rates():
 
         data = response.json()
 
-        # Validate structure
         if not data or "rates" not in data:
             return {}
 
         rates = data["rates"]
 
-        # 🔥 CRITICAL: Ensure EUR exists
+        # 🔥 Ensure EUR exists
         rates["EUR"] = 1.0
 
         return rates
 
-    except Exception as e:
+    except Exception:
         return {}
 
 
