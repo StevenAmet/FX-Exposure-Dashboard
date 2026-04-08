@@ -14,8 +14,13 @@ st.set_page_config(page_title="FX Exposure Dashboard", layout="wide")
 # TITLE
 # -------------------------------
 st.title("🌍 FX Exposure & Hedging Dashboard")
-st.caption("Live FX Rates | Exposure Monitoring | Hedging | Scenario Analysis")
+st.caption("Spot & Forward Hedging | Live FX | Risk Monitoring")
 st.markdown("**Created by Steven Amet**")
+
+# -------------------------------
+# SETTINGS
+# -------------------------------
+currency_options = ["EUR", "USD", "GBP", "JPY", "CHF", "AUD", "CAD"]
 
 # -------------------------------
 # DATA INPUT
@@ -30,13 +35,8 @@ input_method = st.sidebar.radio(
 if input_method == "Upload CSV":
     file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
     if file:
-        try:
-            df = pd.read_csv(file)
-        except Exception as e:
-            st.error(f"Error reading file: {e}")
-            st.stop()
+        df = pd.read_csv(file)
     else:
-        st.info("Please upload a CSV file")
         st.stop()
 
 else:
@@ -47,155 +47,125 @@ else:
             "value": [100000]
         })
 
+    df = st.session_state.portfolio.copy()
+
+    # Auto-fill names
+    for i in range(len(df)):
+        if not df.loc[i, "asset_name"]:
+            df.loc[i, "asset_name"] = f"Asset {i+1}"
+
     df = st.data_editor(
-        st.session_state.portfolio,
+        df,
         num_rows="dynamic",
+        column_config={
+            "asset_name": st.column_config.TextColumn("Asset Name"),
+            "currency": st.column_config.SelectboxColumn(
+                "Currency",
+                options=currency_options
+            ),
+            "value": st.column_config.NumberColumn("Value")
+        },
         use_container_width=True
     )
+
+    df["asset_name"] = [
+        name if name else f"Asset {i+1}"
+        for i, name in enumerate(df["asset_name"])
+    ]
 
     st.session_state.portfolio = df
 
 # -------------------------------
-# DATA CLEANING & VALIDATION
+# CLEANING
 # -------------------------------
-required_cols = ["currency", "value"]
-
-for col in required_cols:
-    if col not in df.columns:
-        st.error(f"Missing required column: {col}")
-        st.stop()
-
-df = df.copy()
-
-# Clean data
 df["currency"] = df["currency"].astype(str).str.upper().str.strip()
 df["value"] = pd.to_numeric(df["value"], errors="coerce")
 
-# Remove invalid rows
-invalid_rows = df[df["currency"] == ""]
-if not invalid_rows.empty:
-    st.warning("Some rows have empty currency and were removed")
-
 df = df.dropna(subset=["currency", "value"])
 
-# Remove negative values
-if (df["value"] < 0).any():
-    st.warning("Negative values detected — treating as absolute values")
-    df["value"] = df["value"].abs()
-
-# Final check
 if df.empty:
-    st.error("No valid data after cleaning")
+    st.error("No valid data")
     st.stop()
 
 # -------------------------------
 # BASE CURRENCY
 # -------------------------------
-currencies = sorted(df["currency"].dropna().unique())
+base_currency = st.sidebar.selectbox(
+    "Base Currency",
+    currency_options,
+    index=0
+)
 
-if len(currencies) == 0:
-    st.error("No valid currencies found")
-    st.stop()
+# -------------------------------
+# FX RATE FUNCTION (ROBUST)
+# -------------------------------
+@st.cache_data
+def get_fx_rate(from_curr, to_curr):
+    if from_curr == to_curr:
+        return 1.0
+    try:
+        # FROM -> USD
+        if from_curr != "USD":
+            d1 = yf.download(f"{from_curr}USD=X", period="1d", progress=False)
+            if d1.empty:
+                return np.nan
+            r1 = float(d1["Close"].iloc[-1])
+        else:
+            r1 = 1.0
 
-base_currency = st.sidebar.selectbox("Base Currency", currencies)
+        # USD -> TO
+        if to_curr != "USD":
+            d2 = yf.download(f"USD{to_curr}=X", period="1d", progress=False)
+            if d2.empty:
+                return np.nan
+            r2 = float(d2["Close"].iloc[-1])
+        else:
+            r2 = 1.0
+
+        return r1 * r2
+    except:
+        return np.nan
 
 # -------------------------------
 # FX RATES
 # -------------------------------
 st.markdown("### 💱 Live FX Rates")
 
-@st.cache_data
-def get_fx_rate(from_curr, to_curr):
-    if from_curr == to_curr:
-        return 1.0
-    pair = f"{from_curr}{to_curr}=X"
-    try:
-        data = yf.download(pair, period="1d", interval="1m")
-        if data.empty:
-            return np.nan
-        return float(data["Close"].iloc[-1])
-    except:
-        return np.nan
+currencies = sorted(df["currency"].unique())
 
-fx_rates = {}
-failed_rates = []
+fx_rates = {c: get_fx_rate(c, base_currency) for c in currencies}
 
-for c in currencies:
-    rate = get_fx_rate(c, base_currency)
-    fx_rates[c] = rate
-    if pd.isna(rate):
-        failed_rates.append(c)
-
-# Show FX table
 fx_df = pd.DataFrame.from_dict(fx_rates, orient="index", columns=["FX Rate"])
+fx_df["FX Rate"] = fx_df["FX Rate"].round(4)
+
 st.dataframe(fx_df)
 
-# Warn if missing rates
-if failed_rates:
-    st.warning(f"Missing FX rates for: {', '.join(failed_rates)}")
+missing = [c for c, r in fx_rates.items() if pd.isna(r)]
+if missing:
+    st.warning(f"Missing FX rates for: {', '.join(missing)}")
 
 # -------------------------------
 # CONVERSION
 # -------------------------------
 df["fx_rate"] = df["currency"].map(fx_rates)
-
-missing_fx = df[df["fx_rate"].isna()]
-if not missing_fx.empty:
-    st.warning("Some assets could not be converted due to missing FX rates")
-
 df["value_base"] = df["value"] * df["fx_rate"]
 
 df = df.dropna(subset=["value_base"])
 
-if df.empty:
-    st.error("All FX conversions failed")
-    st.stop()
-
 total_value = df["value_base"].sum()
-
-if total_value == 0:
-    st.error("Total portfolio value is zero after conversion")
-    st.stop()
 
 # -------------------------------
 # EXPOSURE
 # -------------------------------
 st.markdown("### 🌍 FX Exposure")
 
-fx_exposure = df.groupby("currency")["value_base"].sum().sort_values(ascending=False)
+fx_exposure = df.groupby("currency")["value_base"].sum()
 fx_pct = fx_exposure / total_value
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.dataframe(pd.DataFrame({
-        "Exposure": fx_exposure,
-        "Weight": fx_pct.map("{:.2%}".format)
-    }))
-
-with col2:
-    fig, ax = plt.subplots()
-    fx_exposure.plot(kind="pie", autopct="%1.1f%%", ax=ax)
-    ax.set_ylabel("")
-    st.pyplot(fig)
-
-# -------------------------------
-# RISK MONITORING
-# -------------------------------
-st.markdown("### ⚠️ FX Risk Monitoring")
-
-non_base = fx_pct.drop(base_currency, errors="ignore").sum()
-
-c1, c2 = st.columns(2)
-c1.metric("Base Currency", base_currency)
-c2.metric("Non-Base Exposure", f"{non_base:.2%}")
-
-limit = st.slider("FX Exposure Limit", 0.0, 1.0, 0.4)
-
-if non_base > limit:
-    st.error("⚠️ Exposure breach — hedging required")
-else:
-    st.success("✅ Within limits")
+st.dataframe(pd.DataFrame({
+    "Exposure": fx_exposure,
+    "Weight": fx_pct.map("{:.2%}".format)
+}))
 
 # -------------------------------
 # TARGET FX
@@ -208,82 +178,87 @@ cols = st.columns(len(fx_exposure))
 for i, c in enumerate(fx_exposure.index):
     with cols[i]:
         target_fx[c] = st.number_input(
-            c,
-            min_value=0.0,
-            max_value=1.0,
-            value=float(fx_pct[c]),
-            step=0.01
+            c, 0.0, 1.0, float(fx_pct[c]), step=0.01
         )
 
-total_target = sum(target_fx.values())
-
-if abs(total_target - 1) > 0.01:
-    st.warning("Target allocations should sum to 1 (100%)")
-
 # -------------------------------
-# HEDGING
+# SPOT HEDGING
 # -------------------------------
-st.markdown("### 🔁 Hedging Requirements")
+st.markdown("### 🔁 Spot Hedging")
 
-current = fx_pct.to_dict()
+hedge = {c: target_fx[c] - fx_pct.get(c, 0) for c in target_fx}
 
-hedge = {
-    c: target_fx[c] - current.get(c, 0)
-    for c in target_fx
-}
+spot_df = pd.DataFrame({
+    "Adjustment": hedge,
+    "Trade (€)": [v * total_value for v in hedge.values()]
+}, index=hedge.keys())
 
-hedge_df = pd.DataFrame({
-    "Current": current,
-    "Target": target_fx,
-    "Adjustment": hedge
-})
-
-st.dataframe(hedge_df.style.format("{:.2%}"))
-
-# -------------------------------
-# TRADES
-# -------------------------------
-st.markdown("### 💱 Suggested FX Trades")
-
-trade_df = pd.DataFrame({
-    "Currency": hedge_df.index,
-    "Trade": hedge_df["Adjustment"] * total_value
-})
-
-trade_df["Action"] = trade_df["Trade"].apply(
+spot_df["Action"] = spot_df["Trade (€)"].apply(
     lambda x: "BUY" if x > 0 else "SELL"
 )
 
-st.dataframe(trade_df.style.format({"Trade": "€{:,.0f}"}))
+st.dataframe(spot_df.style.format({"Adjustment": "{:.2%}", "Trade (€)": "€{:,.0f}"}))
+
+# -------------------------------
+# FX FORWARD HEDGING
+# -------------------------------
+st.markdown("### 📅 FX Forward Hedging Simulation")
+
+tenor = st.selectbox("Forward Tenor", ["1M", "3M", "6M"])
+
+interest_diff = st.slider(
+    "Interest Rate Differential (%)",
+    -5.0, 5.0, 1.0
+) / 100
+
+forward_rates = {}
+
+for c in currencies:
+    spot = fx_rates[c]
+    if pd.isna(spot):
+        forward_rates[c] = np.nan
+    else:
+        # simple forward pricing
+        forward_rates[c] = spot * (1 + interest_diff)
+
+fwd_df = pd.DataFrame({
+    "Spot": fx_rates,
+    "Forward": forward_rates
+})
+
+st.dataframe(fwd_df.round(4))
+
+# Forward hedge impact
+forward_impact = {}
+
+for c in hedge:
+    if pd.isna(forward_rates[c]):
+        forward_impact[c] = np.nan
+    else:
+        forward_impact[c] = hedge[c] * total_value * (forward_rates[c] - fx_rates[c])
+
+st.markdown("### 📊 Forward Hedge Impact")
+
+fwd_impact_df = pd.DataFrame.from_dict(
+    forward_impact, orient="index", columns=["PnL (€)"]
+)
+
+st.dataframe(fwd_impact_df.style.format("€{:,.0f}"))
 
 # -------------------------------
 # SCENARIO
 # -------------------------------
-st.markdown("### 📉 FX Scenario Analysis")
+st.markdown("### 📉 FX Scenario")
 
 shock = st.slider("Base Currency Strengthens (%)", 0, 10, 5) / 100
 
-df["shock_rate"] = df["currency"].apply(
+df["shock"] = df["currency"].apply(
     lambda c: 1 if c == base_currency else (1 - shock)
 )
 
-df["stressed_value"] = df["value_base"] * df["shock_rate"]
+impact = (df["value_base"] * df["shock"]).sum() - total_value
 
-impact = df["stressed_value"].sum() - total_value
-
-st.metric("Portfolio Impact", f"€{impact:,.0f}")
-
-# -------------------------------
-# CONTRIBUTION
-# -------------------------------
-st.markdown("### 📊 FX Contribution")
-
-contrib = df.groupby("currency")["stressed_value"].sum() - fx_exposure
-
-fig2, ax2 = plt.subplots()
-contrib.plot(kind="bar", ax=ax2)
-ax2.set_ylabel("Impact (€)")
-st.pyplot(fig2)
+st.metric("Scenario Impact", f"€{impact:,.0f}")
 
 # -------------------------------
 # SUMMARY
@@ -291,13 +266,13 @@ st.pyplot(fig2)
 st.markdown("### 🧠 Executive Summary")
 
 st.write(f"""
-The portfolio totals €{total_value:,.0f} in {base_currency} terms.
+Portfolio value: €{total_value:,.0f}
 
-Non-base currency exposure is {non_base:.2%}, relative to a limit of {limit:.2%}.
+FX exposure is actively managed across currencies.
 
-FX scenario analysis shows a potential impact of €{impact:,.0f} under a {shock:.0%} currency move.
+Both **spot and forward hedging strategies** are evaluated.
 
-Hedging analysis indicates adjustments are required to align with target allocations.
+Forward pricing reflects interest rate differentials.
 
-👉 FX exposure is a key driver of portfolio risk.
+👉 This mirrors real-world FX hedging processes used in asset management.
 """)
