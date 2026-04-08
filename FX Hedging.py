@@ -49,7 +49,6 @@ else:
 
     df = st.session_state.portfolio.copy()
 
-    # Auto-fill names
     for i in range(len(df)):
         if not df.loc[i, "asset_name"]:
             df.loc[i, "asset_name"] = f"Asset {i+1}"
@@ -97,43 +96,55 @@ base_currency = st.sidebar.selectbox(
 )
 
 # -------------------------------
-# FX RATE FUNCTION (ROBUST)
+# FX RATE ENGINE (CACHED + ROBUST)
 # -------------------------------
-@st.cache_data
+@st.cache_data(ttl=3600)
+def fetch_rate(pair):
+    try:
+        data = yf.download(pair, period="1d", progress=False)
+        if data.empty:
+            return None
+        return float(data["Close"].iloc[-1])
+    except:
+        return None
+
+
+@st.cache_data(ttl=3600)
 def get_fx_rate(from_curr, to_curr):
     if from_curr == to_curr:
         return 1.0
-    try:
-        # FROM -> USD
-        if from_curr != "USD":
-            d1 = yf.download(f"{from_curr}USD=X", period="1d", progress=False)
-            if d1.empty:
-                return np.nan
-            r1 = float(d1["Close"].iloc[-1])
-        else:
-            r1 = 1.0
 
-        # USD -> TO
-        if to_curr != "USD":
-            d2 = yf.download(f"USD{to_curr}=X", period="1d", progress=False)
-            if d2.empty:
-                return np.nan
-            r2 = float(d2["Close"].iloc[-1])
-        else:
-            r2 = 1.0
+    # 1. Direct
+    direct = fetch_rate(f"{from_curr}{to_curr}=X")
+    if direct:
+        return direct
 
-        return r1 * r2
-    except:
-        return np.nan
+    # 2. Inverse
+    inverse = fetch_rate(f"{to_curr}{from_curr}=X")
+    if inverse:
+        return 1 / inverse
+
+    # 3. USD Cross
+    if from_curr != "USD" and to_curr != "USD":
+        to_usd = fetch_rate(f"{from_curr}USD=X")
+        usd_to_target = fetch_rate(f"USD{to_curr}=X")
+
+        if to_usd and usd_to_target:
+            return to_usd * usd_to_target
+
+    return np.nan
 
 # -------------------------------
 # FX RATES
 # -------------------------------
 st.markdown("### 💱 Live FX Rates")
 
-currencies = sorted(df["currency"].unique())
+currencies = sorted(set(df["currency"].unique()).union({base_currency}))
 
-fx_rates = {c: get_fx_rate(c, base_currency) for c in currencies}
+# Compute once (performance!)
+fx_rates = {}
+for c in currencies:
+    fx_rates[c] = get_fx_rate(c, base_currency)
 
 fx_df = pd.DataFrame.from_dict(fx_rates, orient="index", columns=["FX Rate"])
 fx_df["FX Rate"] = fx_df["FX Rate"].round(4)
@@ -141,8 +152,18 @@ fx_df["FX Rate"] = fx_df["FX Rate"].round(4)
 st.dataframe(fx_df)
 
 missing = [c for c, r in fx_rates.items() if pd.isna(r)]
+
 if missing:
-    st.warning(f"Missing FX rates for: {', '.join(missing)}")
+    st.warning(f"""
+⚠️ Missing FX rates for: {', '.join(missing)}
+
+Fallback logic attempted:
+- Direct pair
+- Inverse pair
+- USD cross
+
+👉 These currencies are excluded from calculations.
+""")
 
 # -------------------------------
 # CONVERSION
@@ -151,6 +172,10 @@ df["fx_rate"] = df["currency"].map(fx_rates)
 df["value_base"] = df["value"] * df["fx_rate"]
 
 df = df.dropna(subset=["value_base"])
+
+if df.empty:
+    st.error("All FX conversions failed")
+    st.stop()
 
 total_value = df["value_base"].sum()
 
@@ -218,7 +243,6 @@ for c in currencies:
     if pd.isna(spot):
         forward_rates[c] = np.nan
     else:
-        # simple forward pricing
         forward_rates[c] = spot * (1 + interest_diff)
 
 fwd_df = pd.DataFrame({
@@ -228,7 +252,7 @@ fwd_df = pd.DataFrame({
 
 st.dataframe(fwd_df.round(4))
 
-# Forward hedge impact
+# Forward hedge PnL
 forward_impact = {}
 
 for c in hedge:
@@ -268,11 +292,11 @@ st.markdown("### 🧠 Executive Summary")
 st.write(f"""
 Portfolio value: €{total_value:,.0f}
 
-FX exposure is actively managed across currencies.
+FX exposure is actively monitored and converted into base currency terms.
 
-Both **spot and forward hedging strategies** are evaluated.
+Spot hedging aligns exposures with target allocations.
 
-Forward pricing reflects interest rate differentials.
+Forward hedging incorporates interest rate differentials to simulate real FX forward pricing.
 
-👉 This mirrors real-world FX hedging processes used in asset management.
+👉 This reflects real-world currency management workflows.
 """)
