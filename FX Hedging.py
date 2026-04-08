@@ -97,83 +97,88 @@ base_currency = st.sidebar.selectbox(
 )
 
 # -------------------------------
-# FX RATE ENGINE (MULTI-SOURCE)
+# FX RATE ENGINE (FIXED + ROBUST)
 # -------------------------------
 
 @st.cache_data(ttl=3600)
-def fetch_ecb_rates():
+def fetch_all_rates():
+    """Fetch all FX rates once (EUR base)"""
     try:
         url = "https://api.exchangerate.host/latest?base=EUR"
-        data = requests.get(url, timeout=5).json()
-        return data.get("rates", {})
-    except:
-        return {}
+        response = requests.get(url, timeout=5)
 
+        if response.status_code != 200:
+            return {}
 
-@st.cache_data(ttl=3600)
-def fetch_exchangerate_host(base):
-    try:
-        url = f"https://api.exchangerate.host/latest?base={base}"
-        data = requests.get(url, timeout=5).json()
-        return data.get("rates", {})
-    except:
+        data = response.json()
+
+        # Safety check
+        if not data or "rates" not in data:
+            return {}
+
+        return data["rates"]
+
+    except Exception:
         return {}
 
 
 @st.cache_data(ttl=3600)
 def fetch_yfinance(pair):
+    """Fallback market FX data"""
     try:
         data = yf.download(pair, period="5d", progress=False)
-        if data.empty:
+
+        if data.empty or "Close" not in data:
             return None
+
         return float(data["Close"].dropna().iloc[-1])
-    except:
+
+    except Exception:
         return None
 
 
 @st.cache_data(ttl=3600)
 def get_fx_rate(from_curr, to_curr):
 
-    # SAME currency
+    # -------------------------------
+    # SAME currency (CRITICAL FIX)
+    # -------------------------------
     if from_curr == to_curr:
         return 1.0
 
-    # -------------------------------
-    # 1. ECB (EUR BASE)
-    # -------------------------------
-    ecb_rates = fetch_ecb_rates()
-
-    if from_curr == "EUR" and to_curr in ecb_rates:
-        return ecb_rates[to_curr]
-
-    if to_curr == "EUR" and from_curr in ecb_rates:
-        return 1 / ecb_rates[from_curr]
-
-    if from_curr in ecb_rates and to_curr in ecb_rates:
-        return ecb_rates[to_curr] / ecb_rates[from_curr]
+    rates = fetch_all_rates()
 
     # -------------------------------
-    # 2. exchangerate.host
+    # PRIMARY: EUR BASE LOGIC
     # -------------------------------
-    host_rates = fetch_exchangerate_host(from_curr)
-    if to_curr in host_rates:
-        return host_rates[to_curr]
+    if rates:
 
-    host_rates_rev = fetch_exchangerate_host(to_curr)
-    if from_curr in host_rates_rev:
-        return 1 / host_rates_rev[from_curr]
+        # EUR → XXX
+        if from_curr == "EUR" and to_curr in rates:
+            return rates[to_curr]
+
+        # XXX → EUR
+        if to_curr == "EUR" and from_curr in rates:
+            return 1 / rates[from_curr]
+
+        # CROSS via EUR
+        if from_curr in rates and to_curr in rates:
+            return rates[to_curr] / rates[from_curr]
 
     # -------------------------------
-    # 3. Yahoo Finance
+    # FALLBACK: YAHOO (MARKET DATA)
     # -------------------------------
     rate = fetch_yfinance(f"{from_curr}{to_curr}=X")
-    if rate:
+    if rate is not None:
         return rate
 
     inverse = fetch_yfinance(f"{to_curr}{from_curr}=X")
-    if inverse:
+    if inverse is not None:
         return 1 / inverse
 
+    # -------------------------------
+    # FINAL FAIL
+    # -------------------------------
     return np.nan
 
 # -------------------------------
