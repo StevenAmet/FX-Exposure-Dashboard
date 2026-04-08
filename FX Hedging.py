@@ -185,6 +185,9 @@ currencies = sorted(set(df["currency"].unique()).union({base_currency}))
 
 fx_rates = {c: get_fx_rate(c, base_currency) for c in currencies}
 
+# 🔥 CRITICAL FIX — FORCE BASE CURRENCY
+fx_rates[base_currency] = 1.0
+
 fx_df = pd.DataFrame.from_dict(fx_rates, orient="index", columns=["FX Rate"])
 fx_df["FX Rate"] = fx_df["FX Rate"].round(4)
 
