@@ -102,9 +102,9 @@ base_currency = st.sidebar.selectbox(
 
 @st.cache_data(ttl=3600)
 def fetch_all_rates():
-    """Fetch all FX rates once (EUR base)"""
+    """Fetch FX rates (EUR base) - robust version"""
     try:
-        url = "https://api.exchangerate.host/latest?base=EUR"
+        url = "https://api.exchangerate.host/latest"
         response = requests.get(url, timeout=5)
 
         if response.status_code != 200:
@@ -112,13 +112,18 @@ def fetch_all_rates():
 
         data = response.json()
 
-        # Safety check
+        # Validate structure
         if not data or "rates" not in data:
             return {}
 
-        return data["rates"]
+        rates = data["rates"]
 
-    except Exception:
+        # 🔥 CRITICAL: Ensure EUR exists
+        rates["EUR"] = 1.0
+
+        return rates
+
+    except Exception as e:
         return {}
 
 
@@ -164,6 +169,8 @@ def get_fx_rate(from_curr, to_curr):
         # CROSS via EUR
         if from_curr in rates and to_curr in rates:
             return rates[to_curr] / rates[from_curr]
+        
+st.write("DEBUG RATES:", fetch_all_rates())
 
     # -------------------------------
     # FALLBACK: YAHOO (MARKET DATA)
