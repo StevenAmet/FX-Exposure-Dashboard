@@ -18,6 +18,15 @@ st.title("🌍 FX Exposure & Hedging Dashboard")
 st.caption("Spot & Forward Hedging | Live FX | Risk Monitoring")
 st.markdown("**Created by Steven Amet**")
 
+st.markdown("""
+This dashboard helps you understand and manage foreign exchange (FX) risk in a portfolio.
+
+- Convert all assets into a base currency
+- Measure FX exposure by currency
+- Simulate hedging strategies (spot & forward)
+- Analyse sensitivity to FX shocks
+""")
+
 # -------------------------------
 # SETTINGS
 # -------------------------------
@@ -75,6 +84,12 @@ else:
 
     st.session_state.portfolio = df
 
+st.markdown("""
+**What this section does:**  
+Define your portfolio by assigning each asset a currency and value.  
+This represents your raw FX exposure before any hedging.
+""")
+
 # -------------------------------
 # CLEANING
 # -------------------------------
@@ -96,83 +111,58 @@ base_currency = st.sidebar.selectbox(
     index=0
 )
 
+st.markdown(f"""
+**Base Currency Selected: {base_currency}**
+
+All assets will be converted into this currency.  
+This allows consistent valuation and risk measurement.
+""")
+
 # -------------------------------
-# FX RATE ENGINE (FIXED + ROBUST)
+# FX RATE ENGINE
 # -------------------------------
 
 @st.cache_data(ttl=3600)
 def fetch_all_rates():
-    """Fetch FX rates (EUR base) using Frankfurter API (ECB-backed)"""
     try:
         url = "https://api.frankfurter.app/latest"
         response = requests.get(url, timeout=5)
-
         if response.status_code != 200:
             return {}
-
         data = response.json()
-
         if not data or "rates" not in data:
             return {}
-
         rates = data["rates"]
-
-        # 🔥 Ensure EUR exists
         rates["EUR"] = 1.0
-
         return rates
-
     except Exception:
         return {}
 
-
 @st.cache_data(ttl=3600)
 def fetch_yfinance(pair):
-    """Fallback market FX data"""
     try:
         data = yf.download(pair, period="5d", progress=False)
-
         if data.empty or "Close" not in data:
             return None
-
         return float(data["Close"].dropna().iloc[-1])
-
     except Exception:
         return None
 
-
 @st.cache_data(ttl=3600)
 def get_fx_rate(from_curr, to_curr):
-
-    # -------------------------------
-    # SAME currency (CRITICAL FIX)
-    # -------------------------------
     if from_curr == to_curr:
         return 1.0
 
     rates = fetch_all_rates()
 
-    # -------------------------------
-    # PRIMARY: EUR BASE LOGIC
-    # -------------------------------
     if rates:
-
-        # EUR → XXX
         if from_curr == "EUR" and to_curr in rates:
             return rates[to_curr]
-
-        # XXX → EUR
         if to_curr == "EUR" and from_curr in rates:
             return 1 / rates[from_curr]
-
-        # CROSS via EUR
         if from_curr in rates and to_curr in rates:
             return rates[to_curr] / rates[from_curr]
-        
 
-    # -------------------------------
-    # FALLBACK: YAHOO (MARKET DATA)
-    # -------------------------------
     rate = fetch_yfinance(f"{from_curr}{to_curr}=X")
     if rate is not None:
         return rate
@@ -181,12 +171,15 @@ def get_fx_rate(from_curr, to_curr):
     if inverse is not None:
         return 1 / inverse
 
-    # -------------------------------
-    # FINAL FAIL
-    # -------------------------------
     return np.nan
 
 st.write("DEBUG RATES:", fetch_all_rates())
+
+st.markdown("""
+**Debug Rates:**  
+Raw FX rates fetched from the ECB (EUR base).  
+Used to verify data integrity before calculations.
+""")
 
 # -------------------------------
 # FX RATES
@@ -194,10 +187,7 @@ st.write("DEBUG RATES:", fetch_all_rates())
 st.markdown("### 💱 Live FX Rates")
 
 currencies = sorted(set(df["currency"].unique()).union({base_currency}))
-
 fx_rates = {c: get_fx_rate(c, base_currency) for c in currencies}
-
-# 🔥 CRITICAL FIX — FORCE BASE CURRENCY
 fx_rates[base_currency] = 1.0
 
 fx_df = pd.DataFrame.from_dict(fx_rates, orient="index", columns=["FX Rate"])
@@ -205,21 +195,14 @@ fx_df["FX Rate"] = fx_df["FX Rate"].round(4)
 
 st.dataframe(fx_df)
 
-missing = [
-    c for c, r in fx_rates.items()
-    if pd.isna(r) and c != base_currency
-]
+st.markdown("""
+**What this shows:**  
+Each currency converted into the base currency.
 
-if missing:
-    st.warning(f"""
-⚠️ Missing FX rates for: {', '.join(missing)}
+Example:  
+If USD = 0.93 → $1 = €0.93
 
-Fallback logic attempted:
-- ECB
-- exchangerate.host
-- Yahoo Finance
-
-👉 These currencies are excluded from calculations.
+This table drives all portfolio valuation.
 """)
 
 # -------------------------------
@@ -249,6 +232,14 @@ st.dataframe(pd.DataFrame({
     "Weight": fx_pct.map("{:.2%}".format)
 }))
 
+st.markdown("""
+**What this shows:**  
+- Exposure = total value per currency  
+- Weight = % of portfolio in each currency  
+
+This is your **FX risk profile**.
+""")
+
 # -------------------------------
 # TARGET FX
 # -------------------------------
@@ -262,6 +253,13 @@ for i, c in enumerate(fx_exposure.index):
         target_fx[c] = st.number_input(
             c, 0.0, 1.0, float(fx_pct[c]), step=0.01
         )
+
+st.markdown("""
+**What this does:**  
+Define your desired currency allocation.  
+
+Used to calculate required hedging trades.
+""")
 
 # -------------------------------
 # SPOT HEDGING
@@ -283,6 +281,14 @@ st.dataframe(spot_df.style.format({
     "Adjustment": "{:.2%}",
     "Trade (€)": "€{:,.0f}"
 }))
+
+st.markdown("""
+**Interpretation:**  
+- BUY → Increase exposure  
+- SELL → Reduce exposure  
+
+This aligns portfolio with target allocation.
+""")
 
 # -------------------------------
 # FX FORWARD HEDGING
@@ -309,6 +315,13 @@ fwd_df = pd.DataFrame({
 
 st.dataframe(fwd_df.round(4))
 
+st.markdown("""
+**What this shows:**  
+Forward FX rates adjusted for interest rate differentials.
+
+Used to simulate real-world forward contracts.
+""")
+
 forward_impact = {}
 
 for c in hedge:
@@ -325,6 +338,14 @@ fwd_impact_df = pd.DataFrame.from_dict(
 
 st.dataframe(fwd_impact_df.style.format("€{:,.0f}"))
 
+st.markdown("""
+**Interpretation:**  
+Shows profit/loss impact of forward hedging vs spot.
+
+Positive = gain  
+Negative = cost of hedging
+""")
+
 # -------------------------------
 # SCENARIO
 # -------------------------------
@@ -340,6 +361,14 @@ impact = (df["value_base"] * df["shock"]).sum() - total_value
 
 st.metric("Scenario Impact", f"€{impact:,.0f}")
 
+st.markdown("""
+**What this means:**  
+Simulates strengthening of base currency.
+
+Negative impact = foreign assets lose value  
+Positive = gain from FX movement
+""")
+
 # -------------------------------
 # SUMMARY
 # -------------------------------
@@ -354,5 +383,5 @@ Spot hedging aligns exposures with target allocations.
 
 Forward hedging incorporates interest rate differentials to simulate real FX forward pricing.
 
-👉 Multi-source FX engine (ECB + exchangerate.host + Yahoo) ensures high reliability.
+👉 Multi-source FX engine ensures high reliability.
 """)
