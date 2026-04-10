@@ -173,7 +173,19 @@ def get_fx_rate(from_curr, to_curr):
 
     return np.nan
 
-st.write("DEBUG RATES:", fetch_all_rates())
+debug_rates = fetch_all_rates()
+
+if debug_rates:
+    debug_df = pd.DataFrame.from_dict(
+        debug_rates, orient="index", columns=["Rate (EUR Base)"]
+    )
+    debug_df.index.name = "Currency"
+    debug_df["Rate (EUR Base)"] = debug_df["Rate (EUR Base)"].round(4)
+
+    st.markdown("### 🛠 Debug FX Rates (ECB Raw Data)")
+    st.dataframe(debug_df)
+else:
+    st.warning("No debug FX rates available")
 
 st.markdown("""
 **Debug Rates:**  
